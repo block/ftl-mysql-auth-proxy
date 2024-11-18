@@ -57,6 +57,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 func (p *Proxy) handleConnection(ctx context.Context, con net.Conn, cfg *Config) {
 	defer con.Close()
 	backend, err := connectToBackend(ctx, cfg)
+	defer backend.Close()
 	if err != nil {
 		p.logger.Print("failed to connect to backend", err.Error())
 		return
