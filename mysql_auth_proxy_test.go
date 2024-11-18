@@ -1,1 +1,1 @@
-package deleteme
+package mysqlauthproxy
