@@ -2,12 +2,13 @@ package mysqlauthproxy
 
 import (
 	"context"
-	"crypto/tls"
-	"database/sql/driver"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 )
+
 type Proxy struct {
 	bind   url.URL
 	dsn    string
@@ -28,9 +29,13 @@ func NewProxy(bind url.URL, dsn string, logger Logger) *Proxy {
 // ListenAndServe listens on the TCP network address for incoming connections
 // It will not return until the context is done.
 func (p *Proxy) ListenAndServe(ctx context.Context) error {
-	socket, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.bind.Host, p.bind.Port))
+	socket, err := net.Listen("tcp", fmt.Sprintf("%s:%s", p.bind.Hostname(), p.bind.Port()))
 	if err != nil {
-
+		return err
+	}
+	cfg, err := ParseDSN(p.dsn)
+	if err != nil {
+		return err
 	}
 	for {
 		con, err := socket.Accept()
@@ -38,7 +43,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 			p.logger.Print("failed to accept connection", err)
 			continue
 		}
-		go p.handleConnection(ctx, con)
+		go p.handleConnection(ctx, con, cfg)
 
 		select {
 		case <-ctx.Done():
@@ -49,31 +54,60 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	return nil
 }
 
-func (p *Proxy) handleConnection(ctx context.Context, con net.Conn) {
+func (p *Proxy) handleConnection(ctx context.Context, con net.Conn, cfg *Config) {
 	defer con.Close()
-	backend, err := connectToBackend(ctx, p.dsn)
+	backend, err := connectToBackend(ctx, cfg)
 	if err != nil {
-		p.logger.Print( "failed to connect to backend", err.Error())
+		p.logger.Print("failed to connect to backend", err.Error())
 		return
 	}
-	// We need to send a handshake to the client
-	// The client will respond with a handshake response
-	// Then we need to start just forwarding packets
-	buf := newBuffer(con)
-	buf.takeBuffer()
-   backend.
-
-
+	err = writeServerHandshakePacket(con, backend)
+	if err != nil {
+		p.logger.Print("failed to write server handshake packet", err.Error())
+		return
+	}
+	// Now we need to read a client handshake packet
+	// We re-use the mysqlConn struct to parse the packet
+	mc := &mysqlConn{
+		maxAllowedPacket: maxPacketSize,
+		maxWriteSize:     maxPacketSize - 1,
+		closech:          make(chan struct{}),
+		cfg:              cfg,
+		buf:              newBuffer(con),
+		netConn:          con,
+		rawConn:          con,
+		sequence:         1,
+	}
+	mc.parseTime = mc.cfg.ParseTime
+	_, err = mc.readPacket()
+	if err != nil {
+		p.logger.Print("failed to read server handshake packet", err.Error())
+		return
+	}
+	// Now we are authenticated, send an OK packet
+	err = mc.writePacket([]byte{0, 0, 0, 0, 0, 0, 0})
+	if err != nil {
+		p.logger.Print()
+		return
+	}
+	// All good, lets start proxying bytes
+	go func() {
+		_, err := io.Copy(backend.netConn, con)
+		if err != nil {
+			p.logger.Print("failed to copy from client to backend", err.Error())
+		}
+	}()
+	_, err = io.Copy(con, backend.netConn)
+	if err != nil {
+		p.logger.Print("failed to copy from backend to the client", err.Error())
+	}
 }
 
 // Open new Connection.
 // See https://github.com/go-sql-driver/mysql#dsn-data-source-name for how
 // the DSN string is formatted
-func connectToBackend(ctx context.Context, dsn string) (*mysqlConn, error) {
-	cfg, err := ParseDSN(dsn)
-	if err != nil {
-		return nil, err
-	}
+func connectToBackend(ctx context.Context, cfg *Config) (*mysqlConn, error) {
+
 	c := newConnector(cfg)
 	conn, err := c.Connect(ctx)
 	if err != nil {
@@ -88,140 +122,25 @@ func connectToBackend(ctx context.Context, dsn string) (*mysqlConn, error) {
 	return nil, fmt.Errorf("failed to connect to backend")
 }
 
-
-func  writeServerHandshakePacket(authResp []byte, plugin string) error {
-	// Adjust client flags based on server support
-	clientFlags := clientProtocol41 |
-		clientSecureConn |
-		clientLongPassword |
-		clientTransactions |
-		clientLocalFiles |
-		clientPluginAuth |
-		clientMultiResults |
-		clientConnectAttrs |
-		mc.flags&clientLongFlag
-
-	if mc.cfg.ClientFoundRows {
-		clientFlags |= clientFoundRows
-	}
-
-	// To enable TLS / SSL
-	if mc.cfg.TLS != nil {
-		clientFlags |= clientSSL
-	}
-
-	if mc.cfg.MultiStatements {
-		clientFlags |= clientMultiStatements
-	}
-
-	// encode length of the auth plugin data
-	var authRespLEIBuf [9]byte
-	authRespLen := len(authResp)
-	authRespLEI := appendLengthEncodedInteger(authRespLEIBuf[:0], uint64(authRespLen))
-	if len(authRespLEI) > 1 {
-		// if the length can not be written in 1 byte, it must be written as a
-		// length encoded integer
-		clientFlags |= clientPluginAuthLenEncClientData
-	}
-
-	pktLen := 4 + 4 + 1 + 23 + len(mc.cfg.User) + 1 + len(authRespLEI) + len(authResp) + 21 + 1
-
-	// To specify a db name
-	if n := len(mc.cfg.DBName); n > 0 {
-		clientFlags |= clientConnectWithDB
-		pktLen += n + 1
-	}
-
-	// encode length of the connection attributes
-	var connAttrsLEIBuf [9]byte
-	connAttrsLen := len(mc.connector.encodedAttributes)
-	connAttrsLEI := appendLengthEncodedInteger(connAttrsLEIBuf[:0], uint64(connAttrsLen))
-	pktLen += len(connAttrsLEI) + len(mc.connector.encodedAttributes)
-
-	// Calculate packet length and get buffer with that size
-	data, err := mc.buf.takeBuffer(pktLen + 4)
-	if err != nil {
-		// cannot take the buffer. Something must be wrong with the connection
-		mc.log(err)
-		return errBadConnNoWrite
-	}
-
-	// ClientFlags [32 bit]
-	data[4] = byte(clientFlags)
-	data[5] = byte(clientFlags >> 8)
-	data[6] = byte(clientFlags >> 16)
-	data[7] = byte(clientFlags >> 24)
-
-	// MaxPacketSize [32 bit] (none)
-	data[8] = 0x00
-	data[9] = 0x00
-	data[10] = 0x00
-	data[11] = 0x00
-
-	// Collation ID [1 byte]
-	data[12] = defaultCollationID
-	if cname := mc.cfg.Collation; cname != "" {
-		colID, ok := collations[cname]
-		if ok {
-			data[12] = colID
-		} else if len(mc.cfg.charsets) > 0 {
-			// When cfg.charset is set, the collation is set by `SET NAMES <charset> COLLATE <collation>`.
-			return fmt.Errorf("unknown collation: %q", cname)
-		}
-	}
-
-	// Filler [23 bytes] (all 0x00)
-	pos := 13
-	for ; pos < 13+23; pos++ {
-		data[pos] = 0
-	}
-
-	// SSL Connection Request Packet
-	// http://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::SSLRequest
-	if mc.cfg.TLS != nil {
-		// Send TLS / SSL request packet
-		if err := mc.writePacket(data[:(4+4+1+23)+4]); err != nil {
-			return err
-		}
-
-		// Switch to TLS
-		tlsConn := tls.Client(mc.netConn, mc.cfg.TLS)
-		if err := tlsConn.Handshake(); err != nil {
-			if cerr := mc.canceled.Value(); cerr != nil {
-				return cerr
-			}
-			return err
-		}
-		mc.netConn = tlsConn
-		mc.buf.nc = tlsConn
-	}
-
-	// User [null terminated string]
-	if len(mc.cfg.User) > 0 {
-		pos += copy(data[pos:], mc.cfg.User)
-	}
-	data[pos] = 0x00
-	pos++
-
-	// Auth Data [length encoded integer]
-	pos += copy(data[pos:], authRespLEI)
-	pos += copy(data[pos:], authResp)
-
-	// Databasename [null terminated string]
-	if len(mc.cfg.DBName) > 0 {
-		pos += copy(data[pos:], mc.cfg.DBName)
-		data[pos] = 0x00
-		pos++
-	}
-
-	pos += copy(data[pos:], plugin)
-	data[pos] = 0x00
-	pos++
-
-	// Connection Attributes
-	pos += copy(data[pos:], connAttrsLEI)
-	pos += copy(data[pos:], []byte(mc.connector.encodedAttributes))
-
-	// Send Auth packet
-	return mc.writePacket(data[:pos])
+func writeServerHandshakePacket(writer io.Writer, backendConnection *mysqlConn) error {
+	var toWrite []byte
+	toWrite = append(toWrite, 10)                                                                                         // Protocol version
+	toWrite = append(toWrite, 0)                                                                                          // Null terminated server version string
+	toWrite = append(toWrite, 1, 0, 0, 0)                                                                                 // Connection id Int<4>
+	toWrite = append(toWrite, 1, 2, 3, 4, 5, 6, 7, 8)                                                                     // String[8]	auth-plugin-data-part-1	first 8 bytes of the plugin provided data (scramble)
+	toWrite = append(toWrite, 0)                                                                                          // Filler
+	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16(backendConnection.flags&(^clientSSL)&(^clientPluginAuth))) // Capability flags (lower 2 bytes)
+	toWrite = append(toWrite, 0)                                                                                          // Character set
+	toWrite = append(toWrite, 0, 0)                                                                                       // Status flags
+	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16((backendConnection.flags&(^clientSSL))>>16))               // Capability flags (lower 2 bytes)
+	toWrite = append(toWrite, 20)                                                                                         // Auth plugin data length
+	toWrite = append(toWrite, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)                                                               // reserved
+	toWrite = append(toWrite, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0)                                           // 13 bytes of auth data? Last byte is the null terminator
+	toWrite = append(toWrite, []byte("caching_sha2_password")...)                                                         // auth method, any password is accepted
+	toWrite = append([]byte{byte(len(toWrite))}, toWrite...)                                                              // Length of the packet
+	pktlen := len(toWrite)
+	sizeData := []byte{byte(pktlen), byte(pktlen >> 8), byte(pktlen >> 16), 0}
+	toWrite = append(sizeData, toWrite...)
+	_, err := writer.Write(toWrite)
+	return err
 }
