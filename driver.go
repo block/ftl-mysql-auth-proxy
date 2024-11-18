@@ -1,3 +1,4 @@
+// THIS FILE IS SYNCED FROM THE MYSQL DRIVER UPSTREAM, DO NOT MODIFY
 // Copyright 2012 The Go-MySQL-Driver Authors. All rights reserved.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public

@@ -1,3 +1,4 @@
+// THIS FILE IS SYNCED FROM THE MYSQL DRIVER UPSTREAM, DO NOT MODIFY
 // Go MySQL Driver - A MySQL-Driver for Go's database/sql package
 //
 // Copyright 2016 The Go-MySQL-Driver Authors. All rights reserved.
