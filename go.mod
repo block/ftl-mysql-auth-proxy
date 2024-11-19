@@ -1,4 +1,4 @@
-module github.com/block-open-source/mysql-auth-proxy
+module github.com/block/ftl-mysql-auth-proxy
 
 go 1.23.3
 
