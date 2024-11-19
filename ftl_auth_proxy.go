@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"sync"
 )
 
 type Proxy struct {
@@ -51,7 +52,6 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		default:
 		}
 	}
-	return nil
 }
 
 func (p *Proxy) handleConnection(ctx context.Context, con net.Conn, cfg *Config) {
@@ -88,20 +88,29 @@ func (p *Proxy) handleConnection(ctx context.Context, con net.Conn, cfg *Config)
 	// Now we are authenticated, send an OK packet
 	err = mc.writePacket([]byte{0, 0, 0, 0, 0, 0, 0})
 	if err != nil {
-		p.logger.Print()
+		p.logger.Print(err.Error())
 		return
 	}
+	wg := sync.WaitGroup{}
+	wg.Add(2)
 	// All good, lets start proxying bytes
 	go func() {
+		defer wg.Done()
 		_, err := io.Copy(backend.netConn, con)
 		if err != nil {
-			p.logger.Print("failed to copy from client to backend", err.Error())
+			p.logger.Print("failed to copy from client to backend: %s", err.Error())
 		}
 	}()
-	_, err = io.Copy(con, backend.netConn)
-	if err != nil {
-		p.logger.Print("failed to copy from backend to the client", err.Error())
-	}
+	go func() {
+		defer wg.Done()
+		_, err = io.Copy(con, backend.netConn)
+		if err != nil {
+			p.logger.Print("failed to copy from backend to the client %s", err.Error())
+		}
+	}()
+	// We only return after both copies are done, to allow for half closed connections
+	// I am not sure if they are possible in the mysql protocol, but better safe than sorry
+	wg.Wait()
 }
 
 // Open new Connection.
