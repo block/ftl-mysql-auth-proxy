@@ -22,9 +22,8 @@ import (
 	"time"
 )
 
-// MySQL client/server protocol documentations.
-// https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
-// https://mariadb.com/kb/en/clientserver-protocol/
+// Packets documentation:
+// http://dev.mysql.com/doc/internals/en/client-server-protocol.html
 
 // Read packet to buffer 'data'
 func (mc *mysqlConn) readPacket() ([]byte, error) {
@@ -118,39 +117,37 @@ func (mc *mysqlConn) writePacket(data []byte) error {
 		// Write packet
 		if mc.writeTimeout > 0 {
 			if err := mc.netConn.SetWriteDeadline(time.Now().Add(mc.writeTimeout)); err != nil {
-				mc.cleanup()
-				mc.log(err)
 				return err
 			}
 		}
 
 		n, err := mc.netConn.Write(data[:4+size])
-		if err != nil {
+		if err == nil && n == 4+size {
+			mc.sequence++
+			if size != maxPacketSize {
+				return nil
+			}
+			pktLen -= size
+			data = data[size:]
+			continue
+		}
+
+		// Handle error
+		if err == nil { // n != len(data)
+			mc.cleanup()
+			mc.log(ErrMalformPkt)
+		} else {
 			if cerr := mc.canceled.Value(); cerr != nil {
 				return cerr
 			}
-			mc.cleanup()
 			if n == 0 && pktLen == len(data)-4 {
 				// only for the first loop iteration when nothing was written yet
-				mc.log(err)
 				return errBadConnNoWrite
-			} else {
-				return err
 			}
-		}
-		if n != 4+size {
-			// io.Writer(b) must return a non-nil error if it cannot write len(b) bytes.
-			// The io.ErrShortWrite error is used to indicate that this rule has not been followed.
 			mc.cleanup()
-			return io.ErrShortWrite
+			mc.log(err)
 		}
-
-		mc.sequence++
-		if size != maxPacketSize {
-			return nil
-		}
-		pktLen -= size
-		data = data[size:]
+		return ErrInvalidConn
 	}
 }
 
@@ -323,15 +320,17 @@ func (mc *mysqlConn) writeHandshakeResponsePacket(authResp []byte, plugin string
 	data[11] = 0x00
 
 	// Collation ID [1 byte]
-	data[12] = defaultCollationID
-	if cname := mc.cfg.Collation; cname != "" {
-		colID, ok := collations[cname]
-		if ok {
-			data[12] = colID
-		} else if len(mc.cfg.charsets) > 0 {
-			// When cfg.charset is set, the collation is set by `SET NAMES <charset> COLLATE <collation>`.
-			return fmt.Errorf("unknown collation: %q", cname)
-		}
+	cname := mc.cfg.Collation
+	if cname == "" {
+		cname = defaultCollation
+	}
+	var found bool
+	data[12], found = collations[cname]
+	if !found {
+		// Note possibility for false negatives:
+		// could be triggered  although the collation is valid if the
+		// collations map does not contain entries the server supports.
+		return fmt.Errorf("unknown collation: %q", cname)
 	}
 
 	// Filler [23 bytes] (all 0x00)
@@ -351,9 +350,6 @@ func (mc *mysqlConn) writeHandshakeResponsePacket(authResp []byte, plugin string
 		// Switch to TLS
 		tlsConn := tls.Client(mc.netConn, mc.cfg.TLS)
 		if err := tlsConn.Handshake(); err != nil {
-			if cerr := mc.canceled.Value(); cerr != nil {
-				return cerr
-			}
 			return err
 		}
 		mc.netConn = tlsConn
@@ -393,7 +389,7 @@ func (mc *mysqlConn) writeHandshakeResponsePacket(authResp []byte, plugin string
 // http://dev.mysql.com/doc/internals/en/connection-phase-packets.html#packet-Protocol::AuthSwitchResponse
 func (mc *mysqlConn) writeAuthSwitchPacket(authData []byte) error {
 	pktLen := 4 + len(authData)
-	data, err := mc.buf.takeBuffer(pktLen)
+	data, err := mc.buf.takeSmallBuffer(pktLen)
 	if err != nil {
 		// cannot take the buffer. Something must be wrong with the connection
 		mc.log(err)
@@ -526,33 +522,32 @@ func (mc *okHandler) readResultOK() error {
 }
 
 // Result Set Header Packet
-// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response.html
+// http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::Resultset
 func (mc *okHandler) readResultSetHeaderPacket() (int, error) {
 	// handleOkPacket replaces both values; other cases leave the values unchanged.
 	mc.result.affectedRows = append(mc.result.affectedRows, 0)
 	mc.result.insertIds = append(mc.result.insertIds, 0)
 
 	data, err := mc.conn().readPacket()
-	if err != nil {
-		return 0, err
+	if err == nil {
+		switch data[0] {
+
+		case iOK:
+			return 0, mc.handleOkPacket(data)
+
+		case iERR:
+			return 0, mc.conn().handleErrorPacket(data)
+
+		case iLocalInFile:
+			return 0, mc.handleInFileRequest(string(data[1:]))
+		}
+
+		// column count
+		num, _, _ := readLengthEncodedInteger(data)
+		// ignore remaining data in the packet. see #1478.
+		return int(num), nil
 	}
-
-	switch data[0] {
-	case iOK:
-		return 0, mc.handleOkPacket(data)
-
-	case iERR:
-		return 0, mc.conn().handleErrorPacket(data)
-
-	case iLocalInFile:
-		return 0, mc.handleInFileRequest(string(data[1:]))
-	}
-
-	// column count
-	// https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset.html
-	num, _, _ := readLengthEncodedInteger(data)
-	// ignore remaining data in the packet. see #1478.
-	return int(num), nil
+	return 0, err
 }
 
 // Error Packet
@@ -1331,8 +1326,7 @@ func (rows *binaryRows) readRow(dest []driver.Value) error {
 		case fieldTypeDecimal, fieldTypeNewDecimal, fieldTypeVarChar,
 			fieldTypeBit, fieldTypeEnum, fieldTypeSet, fieldTypeTinyBLOB,
 			fieldTypeMediumBLOB, fieldTypeLongBLOB, fieldTypeBLOB,
-			fieldTypeVarString, fieldTypeString, fieldTypeGeometry, fieldTypeJSON,
-			fieldTypeVector:
+			fieldTypeVarString, fieldTypeString, fieldTypeGeometry, fieldTypeJSON:
 			var isNull bool
 			var n int
 			dest[i], isNull, n, err = readLengthEncodedString(data[pos:])

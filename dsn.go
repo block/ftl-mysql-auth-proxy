@@ -45,8 +45,7 @@ type Config struct {
 	DBName               string            // Database name
 	Params               map[string]string // Connection parameters
 	ConnectionAttributes string            // Connection Attributes, comma-delimited string of user-defined "key:value" pairs
-	charsets             []string          // Connection charset. When set, this will be set in SET NAMES <charset> query
-	Collation            string            // Connection collation. When set, this will be set in SET NAMES <charset> COLLATE <collation> query
+	Collation            string            // Connection collation
 	Loc                  *time.Location    // Location for time.Time values
 	MaxAllowedPacket     int               // Max packet size allowed
 	ServerPubKey         string            // Server public key name
@@ -56,8 +55,6 @@ type Config struct {
 	ReadTimeout          time.Duration     // I/O read timeout
 	WriteTimeout         time.Duration     // I/O write timeout
 	Logger               Logger            // Logger
-	// DialFunc specifies the dial function for creating connections
-	DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// boolean fields
 
@@ -286,10 +283,6 @@ func (cfg *Config) FormatDSN() string {
 		writeDSNParam(&buf, &hasParam, "clientFoundRows", "true")
 	}
 
-	if charsets := cfg.charsets; len(charsets) > 0 {
-		writeDSNParam(&buf, &hasParam, "charset", strings.Join(charsets, ","))
-	}
-
 	if col := cfg.Collation; col != "" {
 		writeDSNParam(&buf, &hasParam, "collation", col)
 	}
@@ -508,10 +501,6 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 			if !isBool {
 				return errors.New("invalid bool value: " + value)
 			}
-
-		// charset
-		case "charset":
-			cfg.charsets = strings.Split(value, ",")
 
 		// Collation
 		case "collation":
