@@ -8,7 +8,7 @@ copy-driver-code:
     find mysql -name '*.go' ! -name '*_test.go' -exec cp {} tmpcpy \;
     cd tmpcpy
     for f in *.go; do
-        cat $f >tmp && echo '// THIS FILE IS SYNCED FROM THE MYSQL DRIVER UPSTREAM, DO NOT MODIFY' >$f && cat tmp >>$f && mv tmp f
+        cat $f >tmp && echo '// THIS FILE IS SYNCED FROM THE MYSQL DRIVER UPSTREAM, DO NOT MODIFY' >$f && cat tmp >>$f && rm tmp
     done
     cd ..
     mv tmpcpy/* .
