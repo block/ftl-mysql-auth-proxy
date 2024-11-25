@@ -3,18 +3,16 @@ package mysqlauthproxy
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
-	"net/url"
 	"testing"
-	"time"
 
 	"github.com/alecthomas/assert/v2"
 )
 
 func TestMysqlAuthProxy(t *testing.T) {
-	parse, err := url.Parse("http://localhost:3232")
-	assert.NoError(t, err)
-	proxy := NewProxy(*parse, "admin:admin@tcp(127.0.0.1:3306)/mydatabase", defaultLogger)
+	portC := make(chan int)
+	proxy := NewProxy("localhost", 0, "admin:admin@tcp(127.0.0.1:3306)/mydatabase", defaultLogger, portC)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -23,10 +21,10 @@ func TestMysqlAuthProxy(t *testing.T) {
 			t.Errorf("error: %v", err)
 		}
 	}()
-	time.Sleep(time.Second)
+	port := <-portC
 
 	// Open a connection to the database
-	db, err := sql.Open("mysql", "foo:bar@tcp(127.0.0.1:3232)/mydatabase")
+	db, err := sql.Open("mysql", fmt.Sprintf("foo:bar@tcp(127.0.0.1:%d)/mydatabase", port))
 	if err != nil {
 		log.Fatal("Error opening database connection:", err)
 	}

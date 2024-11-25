@@ -6,31 +6,37 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"sync"
 )
 
 type Proxy struct {
-	bind   url.URL
-	dsn    string
-	logger Logger
+	host        string
+	port        int
+	dsn         string
+	logger      Logger
+	portBinding chan int
 }
 
-func NewProxy(bind url.URL, dsn string, logger Logger) *Proxy {
+func NewProxy(host string, port int, dsn string, logger Logger, portBinding chan int) *Proxy {
 	if logger == nil {
 		logger = defaultLogger
 	}
 	return &Proxy{
-		bind:   bind,
-		dsn:    dsn,
-		logger: logger,
+		host:        host,
+		port:        port,
+		dsn:         dsn,
+		logger:      logger,
+		portBinding: portBinding,
 	}
 }
 
 // ListenAndServe listens on the TCP network address for incoming connections
 // It will not return until the context is done.
 func (p *Proxy) ListenAndServe(ctx context.Context) error {
-	socket, err := net.Listen("tcp", fmt.Sprintf("%s:%s", p.bind.Hostname(), p.bind.Port()))
+	socket, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
+	if p.portBinding != nil {
+		p.portBinding <- socket.Addr().(*net.TCPAddr).Port
+	}
 	if err != nil {
 		return err
 	}
@@ -57,11 +63,11 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 func (p *Proxy) handleConnection(ctx context.Context, con net.Conn, cfg *Config) {
 	defer con.Close()
 	backend, err := connectToBackend(ctx, cfg)
-	defer backend.Close()
 	if err != nil {
 		p.logger.Print("failed to connect to backend", err.Error())
 		return
 	}
+	defer backend.Close()
 	err = writeServerHandshakePacket(con, backend)
 	if err != nil {
 		p.logger.Print("failed to write server handshake packet", err.Error())
