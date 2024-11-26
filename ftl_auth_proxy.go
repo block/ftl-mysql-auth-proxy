@@ -139,21 +139,23 @@ func connectToBackend(ctx context.Context, cfg *Config) (*mysqlConn, error) {
 }
 
 func writeServerHandshakePacket(writer io.Writer, backendConnection *mysqlConn) error {
+	backendConnection.flags |= clientSecureConn
+	backendConnection.flags |= clientPluginAuth
+	backendConnection.flags &= ^clientSSL
 	var toWrite []byte
-	toWrite = append(toWrite, 10)                                                                                         // Protocol version
-	toWrite = append(toWrite, 0)                                                                                          // Null terminated server version string
-	toWrite = append(toWrite, 1, 0, 0, 0)                                                                                 // Connection id Int<4>
-	toWrite = append(toWrite, 1, 2, 3, 4, 5, 6, 7, 8)                                                                     // String[8]	auth-plugin-data-part-1	first 8 bytes of the plugin provided data (scramble)
-	toWrite = append(toWrite, 0)                                                                                          // Filler
-	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16(backendConnection.flags&(^clientSSL)&(^clientPluginAuth))) // Capability flags (lower 2 bytes)
-	toWrite = append(toWrite, 0)                                                                                          // Character set
-	toWrite = append(toWrite, 0, 0)                                                                                       // Status flags
-	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16((backendConnection.flags&(^clientSSL))>>16))               // Capability flags (lower 2 bytes)
-	toWrite = append(toWrite, 20)                                                                                         // Auth plugin data length
-	toWrite = append(toWrite, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)                                                               // reserved
-	toWrite = append(toWrite, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0)                                           // 13 bytes of auth data? Last byte is the null terminator
-	toWrite = append(toWrite, []byte("caching_sha2_password")...)                                                         // auth method, any password is accepted
-	toWrite = append([]byte{byte(len(toWrite))}, toWrite...)                                                              // Length of the packet
+	toWrite = append(toWrite, append([]byte("8.1.0"), 0)...)                                            // Null terminated server version string, hard coded for now, this is very crap
+	toWrite = append(toWrite, 1, 0, 0, 0)                                                               // Connection id Int<4>
+	toWrite = append(toWrite, 1, 2, 3, 4, 5, 6, 7, 8)                                                   // String[8]	auth-plugin-data-part-1	first 8 bytes of the plugin provided data (scramble)
+	toWrite = append(toWrite, 0)                                                                        // Filler
+	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16(backendConnection.flags&0xFFFF))         // Capability flags (lower 2 bytes)
+	toWrite = append(toWrite, 0)                                                                        // Character set
+	toWrite = append(toWrite, 0, 0)                                                                     // Status flags
+	toWrite = binary.LittleEndian.AppendUint16(toWrite, uint16(((backendConnection.flags)>>16)&0xFFFF)) // Capability flags (upper 2 bytes)
+	toWrite = append(toWrite, 20)                                                                       // Auth plugin data length
+	toWrite = append(toWrite, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)                                             // reserved
+	toWrite = append(toWrite, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0)                         // 13 bytes of auth data? Last byte is the null terminator
+	toWrite = append(toWrite, []byte("caching_sha2_password")...)                                       // auth method, any password is accepted
+	toWrite = append([]byte{byte(len(toWrite))}, toWrite...)                                            // Length of the packet
 	pktlen := len(toWrite)
 	sizeData := []byte{byte(pktlen), byte(pktlen >> 8), byte(pktlen >> 16), 0}
 	toWrite = append(sizeData, toWrite...)
