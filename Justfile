@@ -15,3 +15,6 @@ copy-driver-code:
     rm -r tmpcpy
     sed -i '' -e 's/package mysql$/package mysqlauthproxy/' *.go
     sed -i '' -e 's/sql.Register(.*//' driver.go
+    sed -i '' -e 's/.*"database\/sql"//' driver.go
+    go fmt .
+    go mod tidy

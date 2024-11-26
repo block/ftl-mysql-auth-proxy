@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 func TestMysqlAuthProxy(t *testing.T) {
