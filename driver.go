@@ -94,7 +94,7 @@ var driverName = "mysql"
 
 func init() {
 	if driverName != "" {
-		sql.Register(driverName, &MySQLDriver{})
+		
 	}
 }
 
