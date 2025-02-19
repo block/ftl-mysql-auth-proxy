@@ -12,12 +12,12 @@ import (
 type Proxy struct {
 	host        string
 	port        int
-	dsn         string
+	dsn         func(context.Context) (string, error)
 	logger      Logger
 	portBinding chan int
 }
 
-func NewProxy(host string, port int, dsn string, logger Logger, portBinding chan int) *Proxy {
+func NewProxy(host string, port int, dsn func(context.Context) (string, error), logger Logger, portBinding chan int) *Proxy {
 	if logger == nil {
 		logger = defaultLogger
 	}
@@ -40,7 +40,11 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := ParseDSN(p.dsn)
+	dsn, err := p.dsn(ctx)
+	if err != nil {
+		return err
+	}
+	cfg, err := ParseDSN(dsn)
 	if err != nil {
 		return err
 	}
