@@ -40,20 +40,24 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dsn, err := p.dsn(ctx)
-	if err != nil {
-		return err
-	}
-	cfg, err := ParseDSN(dsn)
-	if err != nil {
-		return err
-	}
 	for {
 		con, err := socket.Accept()
 		if err != nil {
 			p.logger.Print("failed to accept connection", err)
 			continue
 		}
+
+		dsn, err := p.dsn(ctx)
+		if err != nil {
+			p.logger.Print("failed to get dsn", err)
+			continue
+		}
+		cfg, err := ParseDSN(dsn)
+		if err != nil {
+			p.logger.Print("failed to parse dsn", err)
+			continue
+		}
+
 		go p.handleConnection(ctx, con, cfg)
 
 		select {
