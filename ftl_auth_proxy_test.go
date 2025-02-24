@@ -13,10 +13,16 @@ import (
 
 func TestMysqlAuthProxy(t *testing.T) {
 	portC := make(chan int)
-	dsnFunc := func(ctx context.Context) (string, error) {
-		return "admin:admin@tcp(127.0.0.1:3306)/mydatabase", nil
+	cfgFn := func(ctx context.Context) (*Config, error) {
+		return &Config{
+			User:   "admin",
+			Passwd: "admin",
+			Net:    "tcp",
+			Addr:   "127.0.0.1:3306",
+			DBName: "mydatabase",
+		}, nil
 	}
-	proxy := NewProxy("localhost", 0, dsnFunc, defaultLogger, portC)
+	proxy := NewProxy("localhost", 0, cfgFn, defaultLogger, portC)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
