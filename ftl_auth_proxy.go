@@ -12,19 +12,19 @@ import (
 type Proxy struct {
 	host        string
 	port        int
-	dsn         func(context.Context) (string, error)
+	cfgFn       func(context.Context) (*Config, error)
 	logger      Logger
 	portBinding chan int
 }
 
-func NewProxy(host string, port int, dsn func(context.Context) (string, error), logger Logger, portBinding chan int) *Proxy {
+func NewProxy(host string, port int, cfgFn func(context.Context) (*Config, error), logger Logger, portBinding chan int) *Proxy {
 	if logger == nil {
 		logger = defaultLogger
 	}
 	return &Proxy{
 		host:        host,
 		port:        port,
-		dsn:         dsn,
+		cfgFn:       cfgFn,
 		logger:      logger,
 		portBinding: portBinding,
 	}
@@ -40,24 +40,16 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	cfg, err := p.cfgFn(ctx)
+	if err != nil {
+		return err
+	}
 	for {
 		con, err := socket.Accept()
 		if err != nil {
 			p.logger.Print("failed to accept connection", err)
 			continue
 		}
-
-		dsn, err := p.dsn(ctx)
-		if err != nil {
-			p.logger.Print("failed to get dsn", err)
-			continue
-		}
-		cfg, err := ParseDSN(dsn)
-		if err != nil {
-			p.logger.Print("failed to parse dsn", err)
-			continue
-		}
-
 		go p.handleConnection(ctx, con, cfg)
 
 		select {
