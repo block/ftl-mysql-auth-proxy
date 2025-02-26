@@ -34,15 +34,15 @@ func NewProxy(host string, port int, cfgFn func(context.Context) (*Config, error
 // It will not return until the context is done.
 func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	socket, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
-	if p.portBinding != nil {
-		p.portBinding <- socket.Addr().(*net.TCPAddr).Port
-	}
 	if err != nil {
 		return err
 	}
 	cfg, err := p.cfgFn(ctx)
 	if err != nil {
 		return err
+	}
+	if p.portBinding != nil {
+		p.portBinding <- socket.Addr().(*net.TCPAddr).Port
 	}
 	for {
 		con, err := socket.Accept()
