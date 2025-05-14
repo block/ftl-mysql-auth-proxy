@@ -37,10 +37,6 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := p.cfgFn(ctx)
-	if err != nil {
-		return err
-	}
 	if p.portBinding != nil {
 		p.portBinding <- socket.Addr().(*net.TCPAddr).Port
 	}
@@ -48,6 +44,11 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		con, err := socket.Accept()
 		if err != nil {
 			p.logger.Print("failed to accept connection", err)
+			continue
+		}
+		cfg, err := p.cfgFn(ctx)
+		if err != nil {
+			p.logger.Print("failed to get config", err)
 			continue
 		}
 		go p.handleConnection(ctx, con, cfg)
